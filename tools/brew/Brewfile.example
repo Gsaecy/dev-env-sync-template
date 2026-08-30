@@ -1,0 +1,5 @@
+# Homebrew Bundle 清单示例
+# 复制到你的私有内容库 tools/brew/Brewfile（生成参考：brew bundle dump --file=-）
+brew "cmake"
+brew "ninja"
+brew "node@22", link: true

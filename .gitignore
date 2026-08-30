@@ -1,0 +1,4 @@
+.DS_Store
+# 隐私内容与个人配置：绝不进入公开仓库
+personal/
+.personal-repo

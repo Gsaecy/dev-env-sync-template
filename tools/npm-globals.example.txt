@@ -1,0 +1,4 @@
+# npm 全局包清单示例，一行一个；# 开头为注释
+# 复制到你的私有内容库 tools/npm-globals.txt（生成参考：npm ls -g --depth=0）
+@openai/codex
+pnpm

@@ -1,0 +1,5 @@
+# winget 清单示例（包 ID，一行一个；# 开头为注释）
+# 复制到你的私有内容库 tools/winget/packages.txt
+Git.Git
+OpenJS.NodeJS.LTS
+Kitware.CMake
