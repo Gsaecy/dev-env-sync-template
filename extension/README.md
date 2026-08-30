@@ -37,13 +37,13 @@ npm run package   # 生成 dev-env-sync-x.y.z.vsix
 
 **方式一：网页上传（已创建 Publisher `Gsaecy` 时推荐）**
 1. 打包：`cd extension && npm run package`
-2. marketplace.visualstudio.com/manage → New extension → 选 Visual Studio Code → 上传生成的 `.vsix`
+2. marketplace.visualstudio.com/manage → New extension → 选 Visual Studio Code → 上传生成的 `.vsix`（出版商 ID 为 `honor-world`）
 
 **方式二：CLI 发布（浏览器授权）**
 ```bash
 cd extension
-npx @vscode/vsce login Gsaecy   # 打开浏览器完成 GitHub 授权
-npx @vscode/vsce publish        # 发布当前版本
+npx @vscode/vsce login honor-world   # 打开浏览器完成 GitHub 授权
+npx @vscode/vsce publish             # 发布当前版本
 ```
 
 **方式三：CI 自动发布**：GitHub 仓库添加 secret `VSCE_PAT`（Azure DevOps PAT，Marketplace → Manage 权限），推一个 `v*` 标签，`.github/workflows/publish-extension.yml` 会自动发布。
