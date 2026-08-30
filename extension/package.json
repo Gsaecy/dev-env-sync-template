@@ -3,7 +3,7 @@
   "displayName": "Dev Env Sync",
   "description": "One-click deploy & upload of your personal dev environment: Copilot skills, global instructions and tool manifests from a private GitHub repo.",
   "version": "0.1.0",
-  "publisher": "gsaecy",
+  "publisher": "Gsaecy",
   "license": "MIT",
   "repository": {
     "type": "git",

@@ -35,13 +35,17 @@ npm run package   # 生成 dev-env-sync-x.y.z.vsix
 
 ## 发布到 Marketplace（新设备即可由设置同步自动安装）
 
-1. 创建 Publisher：marketplace.visualstudio.com → 登录 → Create Publisher → **ID 填 `gsaecy`**（须与 package.json 一致）
-2. 本地发布（浏览器授权，推荐）：
-   ```bash
-   cd extension
-   npx @vscode/vsce login gsaecy   # 打开浏览器完成 GitHub 授权
-   npx @vscode/vsce publish        # 发布当前版本
-   ```
-3. 或走 CI：在 GitHub 仓库添加 secret `VSCE_PAT`（Azure DevOps PAT，Marketplace → Manage 权限），然后推一个 `v*` 标签，`.github/workflows/publish-extension.yml` 会自动发布
+**方式一：网页上传（已创建 Publisher `Gsaecy` 时推荐）**
+1. 打包：`cd extension && npm run package`
+2. marketplace.visualstudio.com/manage → New extension → 选 Visual Studio Code → 上传生成的 `.vsix`
+
+**方式二：CLI 发布（浏览器授权）**
+```bash
+cd extension
+npx @vscode/vsce login Gsaecy   # 打开浏览器完成 GitHub 授权
+npx @vscode/vsce publish        # 发布当前版本
+```
+
+**方式三：CI 自动发布**：GitHub 仓库添加 secret `VSCE_PAT`（Azure DevOps PAT，Marketplace → Manage 权限），推一个 `v*` 标签，`.github/workflows/publish-extension.yml` 会自动发布。
 
 发布后新设备登录同一 GitHub 账号 → VS Code 设置同步会自动安装本插件；以后双击命令即可。
