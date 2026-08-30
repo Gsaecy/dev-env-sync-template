@@ -26,7 +26,7 @@ info "设备环境：$OS / $ARCH"
 # ---------- 1. Copilot skills 与全局指令 ----------
 deploy_copilot() {
   local src="$CONTENT_ROOT/copilot/skills" dst="$HOME/.copilot/skills"
-  if [ ! -d "$src" ]; then warn "未找到 $src，跳过 skills 部署"; return 0; fi
+  if [ ! -d "$src" ]; then warn "未找到 ${src}，跳过 skills 部署"; return 0; fi
   info "部署 Copilot skills → $dst"
   mkdir -p "$dst"
   if command -v rsync >/dev/null 2>&1; then
@@ -47,7 +47,7 @@ deploy_copilot() {
 install_npm_globals() {
   local file="$CONTENT_ROOT/tools/npm-globals.txt"
   [ -s "$file" ] || { warn "npm 全局包清单缺失或为空，跳过"; return 0; }
-  info "安装 npm 全局包（清单：$file）"
+  info "安装 npm 全局包（清单：${file}）"
   grep -vE '^\s*(#|$)' "$file" | while IFS= read -r pkg; do
     npm install -g "$pkg"
   done
