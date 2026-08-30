@@ -20,9 +20,9 @@ if (Test-Path (Join-Path $Personal ".git")) {
 Write-Host "==> 上传同步框架（公开）"
 git -C $RepoDir add -A
 git -C $RepoDir commit -q -m "sync: $Date" 2>$null
-git -C $RepoDir push
+git -C $RepoDir push -u origin HEAD
 if ($LASTEXITCODE -eq 0) { Write-Host "OK 框架已上传" }
-else { Write-Host "  X 框架 push 失败（若远程仓库尚未创建，先到 GitHub 创建 dev-env-sync-template）" }
+else { Write-Host "  X 框架 push 失败（若远程仓库尚未创建，先到 GitHub 创建 dev-env-sync-template，再双击本脚本即可）" }
 
 Write-Host ""
 Write-Host "OK 完成。其他设备双击 deploy.bat 即可同步。"
