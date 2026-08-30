@@ -1,0 +1,68 @@
+{
+  "name": "dev-env-sync",
+  "displayName": "Dev Env Sync",
+  "description": "One-click deploy & upload of your personal dev environment: Copilot skills, global instructions and tool manifests from a private GitHub repo.",
+  "version": "0.1.0",
+  "publisher": "Gsaecy",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "dotfiles",
+    "copilot",
+    "skills",
+    "dev environment",
+    "sync"
+  ],
+  "activationEvents": [
+    "onCommand:devEnvSync.deploy",
+    "onCommand:devEnvSync.upload"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "devEnvSync.deploy",
+        "title": "Dev Env Sync: 一键部署"
+      },
+      {
+        "command": "devEnvSync.upload",
+        "title": "Dev Env Sync: 一键上传"
+      }
+    ],
+    "configuration": {
+      "title": "Dev Env Sync",
+      "properties": {
+        "devEnvSync.personalRepo": {
+          "type": "string",
+          "default": "",
+          "description": "私有内容库地址（git URL）。留空则首次部署时询问。该设置随 VS Code 设置同步。"
+        },
+        "devEnvSync.frameworkDir": {
+          "type": "string",
+          "default": "~/dev/dev-env-sync",
+          "description": "本地工作目录，personal/ 子目录存放私有内容库。"
+        },
+        "devEnvSync.withToolchain": {
+          "type": "boolean",
+          "default": true,
+          "description": "部署技能后，是否在终端自动安装工具链（macOS: Homebrew Brewfile；Windows: winget + VS Build Tools；及 npm 全局包）。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.4"
+  }
+}

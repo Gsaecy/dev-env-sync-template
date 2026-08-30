@@ -52,6 +52,15 @@ playground/…                      # 其他离线资源（如图标库 vendor +
 2. 双击 `deploy`（首次输入私人库地址）
 3. 打开 VS Code「设置同步」（GitHub 账号登录）恢复扩展/设置/快捷键 —— 与框架互补
 
+## VS Code 插件（extension/）
+
+除了双击脚本，还可以用 **VS Code 插件**在编辑器里直接同步（两条命令：`Dev Env Sync: 一键部署` / `一键上传`）。插件自包含（不依赖本仓库目录），私人库地址存 VS Code 设置并随设置同步。
+
+- 源码：`extension/`
+- 构建：`cd extension && npm install && npm run compile && npm run package`（产出 `.vsix`）
+- 安装 VSIX：`code --install-extension dev-env-sync-x.y.z.vsix`
+- 发布到 Marketplace 后，新设备登录 GitHub 账号即可由「设置同步」自动安装插件
+
 ## 日常
 
 - 本机更新环境：双击 `deploy`
