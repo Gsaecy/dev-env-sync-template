@@ -2,7 +2,7 @@
   "name": "dev-env-sync",
   "displayName": "Dev Env Sync",
   "description": "One-click deploy & upload of your personal dev environment: Copilot skills, global instructions and tool manifests from a private GitHub repo.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "honor-world",
   "icon": "icon.png",
   "license": "MIT",

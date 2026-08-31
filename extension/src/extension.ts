@@ -152,7 +152,27 @@ async function runDeploy(log: Logger, askUrl: boolean): Promise<string> {
   if (!url) throw new Error("未配置私人库地址：请在面板或设置中填写 devEnvSync.personalRepo");
 
   const frameworkDir = expandHome(cfg.get<string>("frameworkDir") ?? "~/dev/dev-env-sync");
-  const personalDir = await ensurePersonal(frameworkDir, url, log);
+  let personalDir: string;
+  try {
+    personalDir = await ensurePersonal(frameworkDir, url, log);
+  } catch (e) {
+    const m = errMsg(e);
+    if (/ENOENT/.test(m)) {
+      throw new Error("未找到 git，请先安装 Git（https://git-scm.com）后重试");
+    }
+    if (/repository not found|could not read from remote/i.test(m)) {
+      const act = await vscode.window.showErrorMessage(
+        "Dev Env Sync：无法访问私人库。请确认：① 私有仓库已创建 ② 本机 SSH key 已添加到 GitHub（或改用 https 地址）",
+        "去创建私有仓库",
+      );
+      if (act === "去创建私有仓库") await vscode.env.openExternal(vscode.Uri.parse("https://github.com/new"));
+      throw new Error(`访问私人库失败：${m}`);
+    }
+    if (/permission denied/i.test(m)) {
+      throw new Error("git 访问被拒绝：请在本机生成 SSH key 并添加到 GitHub（ssh-keygen -t ed25519），或把私人库地址改成 https 形式");
+    }
+    throw e;
+  }
   const skillsOk = await deploySkills(personalDir, log);
 
   if (cfg.get<boolean>("withToolchain", true)) {
@@ -287,7 +307,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
     this.post({ type: "busy", busy: true });
     try {
       this.log(`════ 开始${kind === "deploy" ? "一键部署" : "一键上传"} ════`);
-      const msg = kind === "deploy" ? await runDeploy((l) => this.log(l), false) : await runUpload((l) => this.log(l));
+      const msg = kind === "deploy" ? await runDeploy((l) => this.log(l), true) : await runUpload((l) => this.log(l));
       this.log(msg);
       this.post({ type: "done", ok: true, msg });
     } catch (e) {
@@ -349,6 +369,11 @@ class PanelProvider implements vscode.WebviewViewProvider {
   <h1>🚀 Dev Env Sync</h1>
   <div class="sub">一键部署 / 一键上传你的开发环境（技能 · 工具链 · 配置）</div>
 
+  <div id="hint" style="display:none; background: var(--vscode-textBlockQuote-background); border-radius: 4px; padding: 8px; margin-bottom: 10px; font-size: 12px;">
+    首次使用：点击「一键部署」会引导你填写私人库地址（未建库请先在 GitHub 创建一个 Private 仓库）。
+    地址保存后随 VS Code 设置同步，同一 GitHub 账号的其他设备会自动读取，无需再填写。
+  </div>
+
   <div class="row">
     <button id="deploy">⬇️ 一键部署</button>
     <button id="upload" class="secondary">⬆️ 一键上传</button>
@@ -404,6 +429,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
       $("repo").value = m.personalRepo || "";
       $("dir").value = m.frameworkDir || "";
       $("tool").checked = !!m.withToolchain;
+      $("hint").style.display = m.personalRepo ? "none" : "block";
     } else if (m.type === "log") {
       addLog(m.line);
     } else if (m.type === "busy") {

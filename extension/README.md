@@ -15,9 +15,14 @@
 
 ## 配置（设置 → Dev Env Sync）
 
-- `devEnvSync.personalRepo`：私有内容库地址。首次部署时自动询问并保存，随 VS Code 设置同步。
+- `devEnvSync.personalRepo`：私有内容库地址。首次部署时自动询问并保存，随 VS Code 设置同步——同一 GitHub 账号的新设备会自动读取，无需再填写。
 - `devEnvSync.frameworkDir`：本地工作目录（默认 `~/dev/dev-env-sync`）。
 - `devEnvSync.withToolchain`：部署后是否自动装工具链（默认开）。
+
+## 新设备前置
+
+1. 已装 Git（https://git-scm.com）
+2. SSH key 已添加到 GitHub（`ssh-keygen -t ed25519`），或私人库地址用 https 形式
 
 ## 私有内容库结构
 
