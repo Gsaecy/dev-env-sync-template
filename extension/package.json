@@ -2,8 +2,9 @@
   "name": "dev-env-sync",
   "displayName": "Dev Env Sync",
   "description": "One-click deploy & upload of your personal dev environment: Copilot skills, global instructions and tool manifests from a private GitHub repo.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "honor-world",
+  "icon": "icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -25,10 +26,29 @@
   ],
   "activationEvents": [
     "onCommand:devEnvSync.deploy",
-    "onCommand:devEnvSync.upload"
+    "onCommand:devEnvSync.upload",
+    "onView:devEnvSync.panel"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "devEnvSync",
+          "title": "Dev Env Sync",
+          "icon": "media/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "devEnvSync": [
+        {
+          "type": "webview",
+          "id": "devEnvSync.panel",
+          "name": "同步面板"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "devEnvSync.deploy",
