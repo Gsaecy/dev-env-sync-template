@@ -2,7 +2,7 @@
   "name": "dev-env-sync",
   "displayName": "部署环境一键迁移",
   "description": "一键部署与上传个人开发环境：Copilot 技能、全局指令、扩展清单与工具链，随私人 GitHub 仓库跨设备迁移，按平台自动过滤专属扩展。",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "honor-world",
   "icon": "icon.png",
   "license": "MIT",

@@ -804,12 +804,13 @@ class PanelProvider implements vscode.WebviewViewProvider {
 
   .cfg label { display: block; color: var(--text-sub); font-size: 11px; margin: 8px 0 4px; }
 
-  .switch { display: flex; align-items: center; gap: 8px; margin: 10px 0; cursor: pointer; user-select: none; color: var(--text-sub); font-size: 11.5px; }
-  .switch input { display: none; }
-  .switch .track { flex: none; width: 34px; height: 20px; border-radius: 10px; background: var(--chip-bg); border: 1px solid var(--line-strong); position: relative; transition: background .2s ease, border-color .2s ease; }
-  .switch .track::after { content: ""; position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: left .2s ease; }
-  .switch input:checked + .track { background: var(--accent); border-color: transparent; }
-  .switch input:checked + .track::after { left: 16px; }
+  /* .cfg .switch 特异性高于 .cfg label，防止 display:flex 被覆盖导致轨道塌陷 */
+  .cfg .switch { display: flex; align-items: center; gap: 8px; margin: 10px 0; cursor: pointer; user-select: none; color: var(--text-sub); font-size: 11.5px; }
+  .cfg .switch input { display: none; }
+  .cfg .switch .track { flex: none; width: 34px; height: 20px; border-radius: 10px; background: var(--chip-bg); border: 1px solid var(--line-strong); position: relative; transition: background .2s ease, border-color .2s ease; }
+  .cfg .switch .track::after { content: ""; position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: left .2s ease; }
+  .cfg .switch input:checked + .track { background: var(--accent); border-color: transparent; }
+  .cfg .switch input:checked + .track::after { left: 16px; }
 
   #hint { display: none; background: var(--accent-soft); border-radius: var(--radius-m); padding: 9px 12px; margin-top: 10px; font-size: 11px; color: var(--text-sub); line-height: 1.5; }
   #savedMsg { display: none; color: #248a3d; font-size: 10.5px; margin-top: 4px; }
