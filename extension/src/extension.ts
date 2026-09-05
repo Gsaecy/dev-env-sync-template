@@ -720,6 +720,8 @@ class PanelProvider implements vscode.WebviewViewProvider {
 
   private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
+    // 原渐变图标（商店同款），面板头部直接显示原图
+    const iconUri = webview.asWebviewUri(vscode.Uri.joinPath(this.ctx.extensionUri, "icon.png"));
     return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -755,7 +757,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
   ::selection { background: var(--accent-soft); }
 
   .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
-  .brand svg { flex: none; color: var(--accent); }
+  .brand img { flex: none; width: 26px; height: 26px; border-radius: 7px; }
   h1 { font-size: 15px; font-weight: 650; letter-spacing: .1px; }
   .en { font-size: 10.5px; color: var(--text-weak); letter-spacing: .2px; margin-top: 1px; }
   .sub { color: var(--text-sub); font-size: 11px; margin: 8px 0 12px; line-height: 1.5; }
@@ -834,36 +836,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <header class="brand">
-    <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
-      <rect x="8" y="1" width="5" height="1"/>
-      <rect x="7" y="2" width="7" height="1"/>
-      <rect x="6" y="3" width="9" height="1"/>
-      <rect x="5" y="4" width="10" height="1"/>
-      <rect x="4" y="5" width="11" height="1"/>
-      <rect x="4" y="6" width="11" height="1"/>
-      <rect x="3" y="7" width="16" height="1"/>
-      <rect x="3" y="8" width="17" height="1"/>
-      <rect x="2" y="9" width="19" height="1"/>
-      <rect x="2" y="10" width="20" height="1"/>
-      <rect x="2" y="11" width="20" height="1"/>
-      <rect x="3" y="12" width="19" height="1"/>
-      <rect x="3" y="13" width="18" height="1"/>
-      <rect x="4" y="14" width="16" height="1"/>
-      <rect x="4" y="15" width="10" height="1"/>
-      <rect x="16" y="15" width="3" height="1"/>
-      <rect x="6" y="16" width="7" height="1"/>
-      <rect x="9" y="17" width="1" height="1"/>
-      <rect x="11" y="17" width="2" height="1"/>
-      <rect x="4" y="18" width="1" height="1"/>
-      <rect x="10" y="18" width="5" height="1"/>
-      <rect x="3" y="19" width="3" height="1"/>
-      <rect x="9" y="19" width="6" height="1"/>
-      <rect x="2" y="20" width="4" height="1"/>
-      <rect x="9" y="20" width="6" height="1"/>
-      <rect x="3" y="21" width="3" height="1"/>
-      <rect x="10" y="21" width="5" height="1"/>
-      <rect x="10" y="22" width="4" height="1"/>
-    </svg>
+    <img src="${iconUri}" alt="">
     <div>
       <h1>部署环境一键迁移</h1>
       <div class="en">Dev Env Sync</div>
