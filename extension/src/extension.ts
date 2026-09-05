@@ -126,6 +126,64 @@ function readManifestLines(file: string): Promise<string[]> {
     .catch(() => []);
 }
 
+// ---------- 扩展清单（按平台分节） ----------
+// 部署时安装「通用」段 + 当前平台专属段，其他平台段忽略（如 macOS 的 Swift 扩展不会同步到 Windows）。
+
+interface ManifestSections {
+  common: string[];
+  platforms: Record<string, string[]>;
+}
+
+const PLATFORM_LABEL: Record<string, string> = {
+  darwin: "macOS",
+  win32: "Windows",
+  linux: "Linux",
+};
+
+function parseManifest(text: string): ManifestSections {
+  const m: ManifestSections = { common: [], platforms: {} };
+  let cur: string[] = m.common;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) {
+      const mm = line.match(/^#\s*\[platform:([a-z0-9_]+)\]/);
+      if (mm) {
+        const p = mm[1];
+        m.platforms[p] = m.platforms[p] ?? [];
+        cur = m.platforms[p];
+      }
+      continue;
+    }
+    cur.push(line);
+  }
+  return m;
+}
+
+function serializeManifest(m: ManifestSections): string {
+  const lines = [
+    "# VS Code 扩展清单（由 Dev Env Sync 自动生成）",
+    "# 部署时安装「通用」段 + 当前平台专属段；其他平台段忽略",
+    "",
+    ...m.common,
+  ];
+  for (const [p, ids] of Object.entries(m.platforms)) {
+    if (!ids.length) continue;
+    const label = PLATFORM_LABEL[p] ?? p;
+    lines.push("", `# [platform:${p}] ${label} 专属`);
+    lines.push(...ids);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+/** 按扩展 ID 启发式猜测所属平台：macOS 专属扩展（swift/xcode/apple）识别可靠，Windows/Linux 专属不猜。 */
+function guessPlatform(id: string): string | null {
+  const l = id.toLowerCase();
+  if (/(^|[.\-_])(swift|xcode|apple|darwin)([.\-_]|$)/.test(l)) return "darwin";
+  return null;
+}
+
 function codeCli(): string | null {
   const bin = process.platform === "win32" ? "code.cmd" : "code";
   const appBin = path.join(vscode.env.appRoot, "bin", bin);
@@ -259,7 +317,10 @@ async function deployExtensions(personalDir: string, log: Logger, emit: ItemEmit
     emit({ id: "tool:code-cli", name: "扩展安装器 · code CLI", status: "manual", detail: "未找到 code 命令", url: "https://code.visualstudio.com/download" });
     return { changed: false };
   }
-  const ids = await readManifestLines(file);
+  // 只安装通用段 + 当前平台专属段（如 macOS 的 Swift 扩展不会装到 Windows）
+  const text = await fs.readFile(file, "utf8").catch(() => "");
+  const sections = parseManifest(text);
+  const ids = [...new Set([...sections.common, ...(sections.platforms[process.platform] ?? [])])];
   let installed = 0;
   await runPool(
     ids.map((id) => async () => {
@@ -425,14 +486,37 @@ async function runUpload(log: Logger, emit: ItemEmitter): Promise<string> {
     throw new Error("personal 内容库不存在，请先执行「一键部署」");
   }
 
-  // 1. 导出本机扩展清单到私有库
+  // 1. 导出本机扩展清单到私有库（按平台分节：通用段合并保留、其他平台段原样、当前平台专属段按启发式归类）
   emit({ id: "up:manifest", name: "扩展清单 · 导出本机已装扩展", status: "running", detail: "正在导出…" });
   try {
-    const ids = listInstalledExtensions().filter((id) => id !== SELF_ID);
+    const file = path.join(personalDir, "tools", "vscode-extensions.txt");
     const dir = path.join(personalDir, "tools");
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, "vscode-extensions.txt"), `# VS Code 扩展清单（由 Dev Env Sync 自动生成，部署时按此清单安装）\n${ids.join("\n")}\n`, "utf8");
-    emit({ id: "up:manifest", name: `扩展清单 · 已导出 ${ids.length} 个扩展`, status: "ok", detail: "导出完成" });
+    const old = parseManifest(await fs.readFile(file, "utf8").catch(() => ""));
+    const all = listInstalledExtensions().filter((id) => id !== SELF_ID);
+
+    const mine: string[] = [];
+    const mineCommon: string[] = [];
+    for (const id of all) {
+      (guessPlatform(id) === process.platform ? mine : mineCommon).push(id);
+    }
+    // 通用段 = 旧通用段 ∪ 本机非专属（不丢其他设备导出的通用扩展）
+    const common = [...new Set([...old.common, ...mineCommon])];
+    // 其他平台专属段原样保留；当前平台专属段 = 旧段 ∪ 本机启发式匹配
+    const platforms: Record<string, string[]> = {};
+    for (const p of Object.keys(old.platforms)) {
+      platforms[p] = p === process.platform ? [...new Set([...old.platforms[p], ...mine])] : old.platforms[p];
+    }
+    if (mine.length) platforms[process.platform] = [...new Set([...(platforms[process.platform] ?? []), ...mine])];
+
+    await fs.writeFile(file, serializeManifest({ common, platforms }), "utf8");
+    const label = PLATFORM_LABEL[process.platform] ?? process.platform;
+    emit({
+      id: "up:manifest",
+      name: `扩展清单 · 已导出 ${all.length} 个（${mine.length} 个归入 ${label} 专属段）`,
+      status: "ok",
+      detail: "导出完成",
+    });
   } catch (e) {
     emit({ id: "up:manifest", name: "扩展清单 · 导出失败", status: "fail", detail: errMsg(e) });
   }
@@ -642,76 +726,168 @@ class PanelProvider implements vscode.WebviewViewProvider {
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https: data:;">
 <style>
-  body { padding: 12px; color: var(--vscode-foreground); font-size: 13px; font-family: var(--vscode-font-family); }
-  h1 { font-size: 15px; margin: 0 0 2px; }
-  .sub { color: var(--vscode-descriptionForeground); font-size: 11px; margin-bottom: 10px; }
-  .row { display: flex; gap: 8px; margin-bottom: 8px; }
-  button { border: 0; border-radius: 3px; padding: 7px 14px; cursor: pointer; font-size: 13px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
-  button:hover { background: var(--vscode-button-hoverBackground); }
-  button:disabled { opacity: .5; cursor: default; }
-  button.secondary { color: var(--vscode-foreground); background: var(--vscode-button-secondaryBackground); }
-  button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
-  button.small { padding: 4px 10px; font-size: 12px; }
-  #status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: var(--vscode-textBlockQuote-background); color: var(--vscode-descriptionForeground); }
-  #status.busy { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
-  .cfg label { display: block; color: var(--vscode-descriptionForeground); font-size: 11px; margin: 6px 0 2px; }
-  .cfg input[type=text] { width: 100%; box-sizing: border-box; padding: 5px 7px; border: 1px solid var(--vscode-input-border, transparent); background: var(--vscode-input-background); color: var(--vscode-input-foreground); border-radius: 3px; }
-  .cfg .check { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
-  .cfg .check label { margin: 0; }
-  .divider { height: 1px; background: var(--vscode-panel-border); margin: 10px 0; }
-  #hint { display:none; background: var(--vscode-textBlockQuote-background); border-radius: 4px; padding: 8px; margin-bottom: 10px; font-size: 12px; }
-  #savedMsg { display: none; color: var(--vscode-testing-iconPassed); font-size: 11px; margin-top: 4px; }
-  #items { margin-top: 6px; max-height: 260px; overflow-y: auto; }
-  .item { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; font-size: 12px; border-bottom: 1px solid var(--vscode-panel-border, transparent); }
-  .item .ic { flex: none; width: 18px; text-align: center; }
+  :root { --radius-s:8px; --radius-m:12px; --radius-l:16px; --radius-pill:980px; }
+  body.vscode-light {
+    --accent:#007aff; --accent-hover:#0066d6; --accent-soft:rgba(0,122,255,.12);
+    --bg:#f5f5f7; --card:#ffffff;
+    --line:rgba(0,0,0,.08); --line-strong:rgba(0,0,0,.14);
+    --text:#1d1d1f; --text-sub:#6e6e73; --text-weak:#98989d;
+    --input:#ffffff; --chip-bg:rgba(0,0,0,.05); --glass:rgba(255,255,255,.72);
+    --shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.06);
+  }
+  body.vscode-dark, body.vscode-high-contrast {
+    --accent:#0a84ff; --accent-hover:#3395ff; --accent-soft:rgba(10,132,255,.16);
+    --bg:#1c1c1e; --card:#2c2c2e;
+    --line:rgba(255,255,255,.1); --line-strong:rgba(255,255,255,.18);
+    --text:#f5f5f7; --text-sub:#98989d; --text-weak:#6e6e73;
+    --input:#3a3a3c; --chip-bg:rgba(255,255,255,.08); --glass:rgba(44,44,46,.8);
+    --shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.32);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    padding: 12px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Segoe UI', var(--vscode-font-family), sans-serif;
+    font-size: 12.5px;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent-soft); }
+
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+  .brand svg { flex: none; color: var(--accent); }
+  h1 { font-size: 15px; font-weight: 650; letter-spacing: .1px; }
+  .en { font-size: 10.5px; color: var(--text-weak); letter-spacing: .2px; margin-top: 1px; }
+  .sub { color: var(--text-sub); font-size: 11px; margin: 8px 0 12px; line-height: 1.5; }
+
+  .status { display: inline-flex; align-items: center; margin-left: auto; padding: 2px 10px; border-radius: var(--radius-pill); font-size: 10.5px; font-weight: 500; color: var(--text-sub); background: var(--chip-bg); flex: none; }
+  .status.busy { color: var(--accent); background: var(--accent-soft); }
+  .status.ok { color: #248a3d; background: rgba(52,199,89,.15); }
+  .status.err { color: #d70015; background: rgba(255,59,48,.14); }
+
+  .ap-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    padding: 7px 16px; border-radius: var(--radius-pill);
+    border: 1px solid var(--line-strong); background: transparent; color: var(--text);
+    font-size: 12px; font-weight: 500; cursor: pointer; user-select: none; font-family: inherit;
+    transition: background .15s ease, color .15s ease, border-color .15s ease, opacity .15s ease, transform .1s ease;
+  }
+  .ap-btn:hover { background: var(--chip-bg); }
+  .ap-btn:active { opacity: .7; transform: scale(.98); }
+  .ap-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .ap-btn-primary { background: var(--accent); border-color: transparent; color: #fff; }
+  .ap-btn-primary:hover { background: var(--accent-hover); }
+  .ap-btn-ghost { border-color: var(--line); color: var(--text-sub); }
+  .ap-btn-ghost:hover { color: var(--text); background: var(--chip-bg); }
+  .ap-btn-sm { padding: 5px 12px; font-size: 11px; }
+
+  .ap-card {
+    background: var(--glass);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-l);
+    box-shadow: var(--shadow);
+    padding: 12px;
+    margin-top: 10px;
+  }
+  .ap-card h2 { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: var(--text-weak); margin-bottom: 8px; }
+
+  .ap-input {
+    width: 100%; padding: 6px 12px;
+    background: var(--input); border: 1px solid var(--line);
+    border-radius: var(--radius-pill); color: var(--text); font-size: 11.5px; font-family: inherit; outline: none;
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .ap-input::placeholder { color: var(--text-weak); }
+  .ap-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  .cfg label { display: block; color: var(--text-sub); font-size: 11px; margin: 8px 0 4px; }
+
+  .switch { display: flex; align-items: center; gap: 8px; margin: 10px 0; cursor: pointer; user-select: none; color: var(--text-sub); font-size: 11.5px; }
+  .switch input { display: none; }
+  .switch .track { flex: none; width: 34px; height: 20px; border-radius: 10px; background: var(--chip-bg); border: 1px solid var(--line-strong); position: relative; transition: background .2s ease, border-color .2s ease; }
+  .switch .track::after { content: ""; position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: left .2s ease; }
+  .switch input:checked + .track { background: var(--accent); border-color: transparent; }
+  .switch input:checked + .track::after { left: 16px; }
+
+  #hint { display: none; background: var(--accent-soft); border-radius: var(--radius-m); padding: 9px 12px; margin-top: 10px; font-size: 11px; color: var(--text-sub); line-height: 1.5; }
+  #savedMsg { display: none; color: #248a3d; font-size: 10.5px; margin-top: 4px; }
+
+  #items { max-height: 230px; overflow-y: auto; }
+  .item { display: flex; gap: 6px; align-items: baseline; padding: 4px 2px; font-size: 11.5px; border-bottom: 1px solid var(--line); }
+  .item:last-child { border-bottom: 0; }
+  .item .ic { flex: none; width: 16px; text-align: center; }
   .item .nm { flex: none; }
-  .item .dt { color: var(--vscode-descriptionForeground); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .item a { color: var(--vscode-textLink-foreground); text-decoration: none; }
+  .item .dt { color: var(--text-weak); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item a { color: var(--accent); text-decoration: none; }
   .item a:hover { text-decoration: underline; }
-  #log { background: var(--vscode-textBlockQuote-background); border-radius: 4px; padding: 8px; max-height: 140px; overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 11px; white-space: pre-wrap; word-break: break-all; }
-  .okline { color: var(--vscode-testing-iconPassed); }
-  #reload { display: none; }
+
+  #log { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 8px 10px; max-height: 130px; overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 10.5px; white-space: pre-wrap; word-break: break-all; color: var(--text-sub); }
+  .okline { color: #248a3d; }
+  #reloadRow { display: none; margin-top: 8px; }
+  .footer { margin-top: 12px; text-align: center; font-size: 10.5px; color: var(--text-weak); line-height: 1.7; }
+  .footer a { color: var(--accent); text-decoration: none; }
+  .footer a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
-  <h1>🚀 Dev Env Sync <span id="status">空闲</span></h1>
-  <div class="sub">一键部署 / 一键上传你的开发环境（技能 · 工具 · 扩展 · 配置）</div>
+  <header class="brand">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/>
+      <path d="M19.7 3.2v4.1h-4.1"/>
+    </svg>
+    <div>
+      <h1>部署环境一键迁移</h1>
+      <div class="en">Dev Env Sync</div>
+    </div>
+    <span id="status" class="status">空闲</span>
+  </header>
+  <p class="sub">把技能 · 工具 · 扩展 · 配置从私有仓库一键迁移到这台设备，或回传改动</p>
+
+  <div class="row" style="display:flex; gap:8px;">
+    <button id="deploy" class="ap-btn ap-btn-primary">⬇ 一键部署</button>
+    <button id="upload" class="ap-btn">⬆ 一键上传</button>
+  </div>
+  <div class="row" id="reloadRow">
+    <button id="reload" class="ap-btn ap-btn-sm ap-btn-ghost">重启 VS Code 生效</button>
+  </div>
 
   <div id="hint">
     首次使用：点击「一键部署」会引导填写私人库地址（未建库请先在 GitHub 创建一个 Private 仓库）。
     地址保存后随 VS Code 设置同步，同一 GitHub 账号的其他设备自动读取，无需再填写。
   </div>
 
-  <div class="row">
-    <button id="deploy">⬇️ 一键部署</button>
-    <button id="upload" class="secondary">⬆️ 一键上传</button>
-  </div>
-  <div class="row">
-    <button id="reload" class="small">重启 VS Code 生效</button>
-  </div>
-
-  <div class="divider"></div>
-
-  <div class="cfg">
-    <label>私人内容库（private repo）</label>
-    <input type="text" id="repo" placeholder="git@github.com:YOU/private-repo.git">
-    <label>本地工作目录</label>
-    <input type="text" id="dir" placeholder="~/dev/dev-env-sync">
-    <div class="check">
-      <input type="checkbox" id="tool">
-      <label for="tool">部署时自动安装工具链（Homebrew / winget / npm）</label>
+  <section class="ap-card">
+    <h2>设置</h2>
+    <div class="cfg">
+      <label>私人内容库（Private Repo）</label>
+      <input type="text" id="repo" class="ap-input" placeholder="git@github.com:YOU/private-repo.git">
+      <label>本地工作目录</label>
+      <input type="text" id="dir" class="ap-input" placeholder="~/dev/dev-env-sync">
+      <label class="switch">
+        <input type="checkbox" id="tool">
+        <span class="track"></span>部署时自动安装工具链（Homebrew / winget / npm）
+      </label>
+      <button id="save" class="ap-btn ap-btn-sm ap-btn-ghost">应用设置</button>
+      <div id="savedMsg">✔ 已应用</div>
     </div>
-    <button id="save" class="small secondary">应用设置</button>
-    <div id="savedMsg">✔ 已应用</div>
-  </div>
+  </section>
 
-  <div class="divider"></div>
-  <div class="sub">安装清单</div>
-  <div id="items"></div>
+  <section class="ap-card">
+    <h2>安装清单</h2>
+    <div id="items"></div>
+  </section>
 
-  <div class="divider"></div>
-  <div class="sub">运行日志</div>
-  <div id="log"></div>
+  <section class="ap-card">
+    <h2>运行日志</h2>
+    <div id="log"></div>
+  </section>
+
+  <footer class="footer">
+    开发者主页 · <a href="#" data-url="https://hongyuguo.com">hongyuguo.com</a><br>
+    GitHub 项目与赞赏 · <a href="#" data-url="https://github.com/Gsaecy/dev-env-sync-template">dev-env-sync-template</a>
+  </footer>
 
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
@@ -750,7 +926,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
     el.innerHTML = '<span class="ic">' + ICONS[item.status] + '</span><span class="nm">' + esc(item.name) + '</span>' + tag + link + '<span class="dt">' + esc(item.detail ?? "") + "</span>";
   }
 
-  $("items").addEventListener("click", (e) => {
+  document.addEventListener("click", (e) => {
     const a = e.target.closest("a");
     if (a && a.dataset.url) vscode.postMessage({ cmd: "open", url: a.dataset.url });
   });
@@ -769,7 +945,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
         $("deploy").disabled = true;
         $("upload").disabled = true;
         $("status").textContent = m.busyAction === "upload" ? "上传中…" : "部署中…";
-        $("status").classList.add("busy");
+        $("status").className = "status busy";
       }
     } else if (m.type === "saved") {
       $("savedMsg").style.display = "block";
@@ -784,10 +960,11 @@ class PanelProvider implements vscode.WebviewViewProvider {
       $("deploy").disabled = m.busy;
       $("upload").disabled = m.busy;
       $("status").textContent = m.busy ? (m.action === "deploy" ? "部署中…" : "上传中…") : "空闲";
-      $("status").classList.toggle("busy", m.busy);
+      $("status").className = m.busy ? "status busy" : "status";
     } else if (m.type === "done") {
       $("status").textContent = m.ok ? "完成" : "失败";
-      if (m.ok && m.changed) $("reload").style.display = "inline-block";
+      $("status").className = m.ok ? "status ok" : "status err";
+      if (m.ok && m.changed) $("reloadRow").style.display = "block";
     }
   });
 
