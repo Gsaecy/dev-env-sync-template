@@ -83,6 +83,42 @@ async function copyTree(src: string, dst: string): Promise<void> {
   }
 }
 
+/** 并发执行池：同时最多 limit 个任务。 */
+async function runPool<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
+    while (next < tasks.length) {
+      const i = next++;
+      results[i] = await tasks[i]();
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/** 目录签名：相对路径+文件大小（不用 mtime——copyFile 不保留源时间戳，会导致永远不同）。 */
+async function dirSig(dir: string): Promise<string | null> {
+  const list: string[] = [];
+  async function walk(d: string, rel: string): Promise<void> {
+    const es = await fs.readdir(d, { withFileTypes: true });
+    for (const e of es) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(path.join(d, e.name), r);
+      else if (e.isFile()) {
+        const st = await fs.stat(path.join(d, e.name));
+        list.push(`${r}|${st.size}`);
+      }
+    }
+  }
+  try {
+    await walk(dir, "");
+  } catch {
+    return null;
+  }
+  return list.sort().join("\n");
+}
+
 function readManifestLines(file: string): Promise<string[]> {
   return fs
     .readFile(file, "utf8")
@@ -129,74 +165,120 @@ async function ensurePersonal(frameworkDir: string, url: string, log?: Logger): 
     }
   } else {
     if (log) log(`首次克隆 ${url}`);
-    await run("git", ["clone", url, "personal"], frameworkDir, log);
+    try {
+      await run("git", ["clone", url, "personal"], frameworkDir, log);
+    } catch (e) {
+      // 清理半成品目录，避免下次部署时 clone 因目录非空再次失败
+      await fs.rm(personalDir, { recursive: true, force: true }).catch(() => {});
+      throw e;
+    }
   }
   return personalDir;
 }
 
 // ---------- 部署各步骤 ----------
 
-async function deploySkills(personalDir: string, emit: ItemEmitter): Promise<boolean> {
+async function deploySkills(personalDir: string, emit: ItemEmitter): Promise<{ found: boolean; changed: boolean }> {
   const skillsSrc = path.join(personalDir, "copilot", "skills");
   const skillsDst = path.join(os.homedir(), ".copilot", "skills");
-  if (!(await exists(skillsSrc))) return false;
+  if (!(await exists(skillsSrc))) return { found: false, changed: false };
 
-  await fs.rm(skillsDst, { recursive: true, force: true });
+  // 不再全量删除 ~/.copilot/skills：保留本机隐藏文件（.active-skills.json 等）与本机独有技能
   await fs.mkdir(skillsDst, { recursive: true });
-  const dirs = (await fs.readdir(skillsSrc, { withFileTypes: true })).filter((e) => e.isDirectory());
-  for (const d of dirs) {
-    const id = `skill:${d.name}`;
-    emit({ id, name: `技能 · ${d.name}`, status: "running", detail: "命令已发出，正在复制…" });
-    try {
-      await copyTree(path.join(skillsSrc, d.name), path.join(skillsDst, d.name));
-      emit({ id, name: `技能 · ${d.name}`, status: "ok", detail: "安装完毕" });
-    } catch (e) {
-      emit({ id, name: `技能 · ${d.name}`, status: "fail", detail: errMsg(e) });
-    }
+  const srcDirs = new Set(
+    (await fs.readdir(skillsSrc, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name),
+  );
+  const dstEntries = await fs.readdir(skillsDst, { withFileTypes: true }).catch(() => []);
+  const dstDirs = new Set(dstEntries.filter((e) => e.isDirectory()).map((e) => e.name));
+  const localOnly = [...dstDirs].filter((n) => !srcDirs.has(n) && !n.startsWith("."));
+
+  let changed = false;
+  await runPool(
+    [...srcDirs].map((name) => async () => {
+      const id = `skill:${name}`;
+      const s = path.join(skillsSrc, name);
+      const d = path.join(skillsDst, name);
+      try {
+        if ((await dirSig(s)) === (await dirSig(d))) {
+          emit({ id, name: `技能 · ${name}`, status: "ok", detail: "已是最新，跳过" });
+          return;
+        }
+        emit({ id, name: `技能 · ${name}`, status: "running", detail: "正在同步…" });
+        await fs.rm(d, { recursive: true, force: true });
+        await copyTree(s, d);
+        changed = true;
+        emit({ id, name: `技能 · ${name}`, status: "ok", detail: "已更新" });
+      } catch (e) {
+        emit({ id, name: `技能 · ${name}`, status: "fail", detail: errMsg(e) });
+      }
+    }),
+    4,
+  );
+
+  for (const name of localOnly) {
+    emit({ id: `skill:local:${name}`, name: `技能 · ${name}`, status: "ok", detail: "本机独有，已保留" });
   }
-  return true;
+  return { found: true, changed };
 }
 
-async function deployInstructions(personalDir: string, emit: ItemEmitter): Promise<void> {
+async function deployInstructions(personalDir: string, emit: ItemEmitter): Promise<boolean> {
   const instr = path.join(personalDir, "copilot", "copilot-instructions.md");
-  if (!(await exists(instr))) return;
-  emit({ id: "cfg:instructions", name: "配置 · Copilot 全局指令", status: "running", detail: "命令已发出…" });
+  if (!(await exists(instr))) return false;
+  const id = "cfg:instructions";
+  const name = "配置 · Copilot 全局指令";
   try {
-    const gh = path.join(os.homedir(), ".github");
-    await fs.mkdir(gh, { recursive: true });
-    await fs.copyFile(instr, path.join(gh, "copilot-instructions.md"));
-    emit({ id: "cfg:instructions", name: "配置 · Copilot 全局指令", status: "ok", detail: "安装完毕" });
+    const src = await fs.readFile(instr);
+    const dst = path.join(os.homedir(), ".github", "copilot-instructions.md");
+    if (await exists(dst)) {
+      const cur = await fs.readFile(dst);
+      if (cur.equals(src)) {
+        emit({ id, name, status: "ok", detail: "已是最新，跳过" });
+        return false;
+      }
+    }
+    emit({ id, name, status: "running", detail: "正在同步…" });
+    await fs.mkdir(path.dirname(dst), { recursive: true });
+    await fs.copyFile(instr, dst);
+    emit({ id, name, status: "ok", detail: "已更新" });
+    return true;
   } catch (e) {
-    emit({ id: "cfg:instructions", name: "配置 · Copilot 全局指令", status: "fail", detail: errMsg(e) });
+    emit({ id, name, status: "fail", detail: errMsg(e) });
+    return false;
   }
 }
 
-async function deployExtensions(personalDir: string, log: Logger, emit: ItemEmitter): Promise<boolean> {
+async function deployExtensions(personalDir: string, log: Logger, emit: ItemEmitter): Promise<{ changed: boolean }> {
   const file = path.join(personalDir, EXT_MANIFEST);
-  if (!(await exists(file))) return false;
+  if (!(await exists(file))) {
+    log("未找到扩展清单，跳过扩展同步");
+    return { changed: false };
+  }
 
   const cli = codeCli();
   if (!cli) {
     emit({ id: "tool:code-cli", name: "扩展安装器 · code CLI", status: "manual", detail: "未找到 code 命令", url: "https://code.visualstudio.com/download" });
-    return false;
+    return { changed: false };
   }
   const ids = await readManifestLines(file);
-  let changed = false;
-  for (const id of ids) {
-    if (id === SELF_ID || vscode.extensions.getExtension(id)) {
-      emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "ok", detail: "已安装" });
-      continue;
-    }
-    emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "running", detail: "命令已发出，正在安装…" });
-    try {
-      await run(cli, ["--install-extension", id, "--force"], os.homedir(), log, process.platform === "win32");
-      emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "ok", detail: "安装完毕" });
-      changed = true;
-    } catch (e) {
-      emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "fail", detail: errMsg(e).slice(0, 160) });
-    }
-  }
-  return changed;
+  let installed = 0;
+  await runPool(
+    ids.map((id) => async () => {
+      if (id === SELF_ID || vscode.extensions.getExtension(id)) {
+        emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "ok", detail: "已安装" });
+        return;
+      }
+      emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "running", detail: "正在安装…" });
+      try {
+        await run(cli, ["--install-extension", id, "--force"], os.homedir(), log, process.platform === "win32");
+        emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "ok", detail: "安装完毕" });
+        installed++;
+      } catch (e) {
+        emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "fail", detail: errMsg(e).slice(0, 160) });
+      }
+    }),
+    3,
+  );
+  return { changed: installed > 0 };
 }
 
 async function deployToolchain(personalDir: string, log: Logger, emit: ItemEmitter): Promise<void> {
@@ -315,21 +397,23 @@ async function runDeploy(log: Logger, askUrl: boolean, emit: ItemEmitter): Promi
     throw e;
   }
 
-  const skillsOk = await deploySkills(personalDir, emit);
-  if (!skillsOk) log("未找到 skills 目录，跳过技能部署");
-  await deployInstructions(personalDir, emit);
-  const extChanged = await deployExtensions(personalDir, log, emit);
-  if (!extChanged) log("未找到扩展清单或清单为空，跳过扩展同步");
+  const skills = await deploySkills(personalDir, emit);
+  if (!skills.found) log("未找到 skills 目录，跳过技能部署");
+  const instrChanged = await deployInstructions(personalDir, emit);
+  const ext = await deployExtensions(personalDir, log, emit);
 
   if (cfg.get<boolean>("withToolchain", true)) {
     await deployToolchain(personalDir, log, emit);
     await deployNpmGlobals(personalDir, log, emit);
   }
 
-  const msg = skillsOk
-    ? "✔ 部署完毕：技能、全局指令、扩展与工具链均已按清单处理（⚠ 项请手动安装）"
+  const changed = skills.changed || instrChanged || ext.changed;
+  const msg = skills.found
+    ? changed
+      ? "✔ 部署完毕：技能、全局指令、扩展与工具链均已按清单处理（⚠ 项请手动安装）"
+      : "✔ 部署完毕：一切已是最新，无需更新"
     : "⚠ 部署完毕：未找到 skills 目录（请检查私有库 copilot/skills 结构）";
-  return { msg, changed: true };
+  return { msg, changed };
 }
 
 async function runUpload(log: Logger, emit: ItemEmitter): Promise<string> {
@@ -342,13 +426,13 @@ async function runUpload(log: Logger, emit: ItemEmitter): Promise<string> {
   }
 
   // 1. 导出本机扩展清单到私有库
-  emit({ id: "up:manifest", name: "扩展清单 · 导出本机已装扩展", status: "running", detail: "命令已发出…" });
+  emit({ id: "up:manifest", name: "扩展清单 · 导出本机已装扩展", status: "running", detail: "正在导出…" });
   try {
-    const ids = listInstalledExtensions();
+    const ids = listInstalledExtensions().filter((id) => id !== SELF_ID);
     const dir = path.join(personalDir, "tools");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, "vscode-extensions.txt"), `# VS Code 扩展清单（由 Dev Env Sync 自动生成，部署时按此清单安装）\n${ids.join("\n")}\n`, "utf8");
-    emit({ id: "up:manifest", name: `扩展清单 · 已导出 ${ids.length} 个扩展`, status: "ok", detail: "安装完毕" });
+    emit({ id: "up:manifest", name: `扩展清单 · 已导出 ${ids.length} 个扩展`, status: "ok", detail: "导出完成" });
   } catch (e) {
     emit({ id: "up:manifest", name: "扩展清单 · 导出失败", status: "fail", detail: errMsg(e) });
   }
@@ -364,7 +448,7 @@ async function runUpload(log: Logger, emit: ItemEmitter): Promise<string> {
       log("commit 跳过（可能无改动）");
     }
     await run("git", ["push"], personalDir, log);
-    emit({ id: "up:personal", name: "私有内容库 · 提交并推送", status: "ok", detail: "安装完毕" });
+    emit({ id: "up:personal", name: "私有内容库 · 提交并推送", status: "ok", detail: "推送完毕" });
   } catch (e) {
     emit({ id: "up:personal", name: "私有内容库 · 提交并推送", status: "fail", detail: errMsg(e).slice(0, 160) });
     throw new Error(`推送私有库失败：${errMsg(e).slice(0, 200)}`);
@@ -381,7 +465,7 @@ async function runUpload(log: Logger, emit: ItemEmitter): Promise<string> {
         log("框架 commit 跳过（可能无改动）");
       }
       await run("git", ["push", "-u", "origin", "HEAD"], frameworkDir, log);
-      emit({ id: "up:framework", name: "同步框架 · 提交并推送", status: "ok", detail: "安装完毕" });
+      emit({ id: "up:framework", name: "同步框架 · 提交并推送", status: "ok", detail: "推送完毕" });
     } catch (e) {
       emit({ id: "up:framework", name: "同步框架 · 提交并推送", status: "fail", detail: errMsg(e).slice(0, 160) });
     }
@@ -405,7 +489,9 @@ async function cmdDeploy(): Promise<void> {
       { location: vscode.ProgressLocation.Notification, title: "Dev Env Sync：一键部署…" },
       () => runDeploy((l) => output.appendLine(l), true, commandEmitter((l) => output.appendLine(l))),
     );
-    const act = await vscode.window.showInformationMessage(res.msg, "重启 VS Code");
+    const act = res.changed
+      ? await vscode.window.showInformationMessage(res.msg, "重启 VS Code")
+      : await vscode.window.showInformationMessage(res.msg);
     if (act === "重启 VS Code") await vscode.commands.executeCommand("workbench.action.reloadWindow");
   } catch (e) {
     const m = errMsg(e);
@@ -441,6 +527,8 @@ class PanelProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "devEnvSync.panel";
   private view?: vscode.WebviewView;
   private busy = false;
+  private busyAction: "deploy" | "upload" | null = null;
+  private items = new Map<string, Item>();
 
   constructor(private readonly ctx: vscode.ExtensionContext) {}
 
@@ -487,6 +575,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
   }
 
   private emit: ItemEmitter = (item) => {
+    this.items.set(item.id, item);
     this.post({ type: "item", item });
   };
 
@@ -506,6 +595,8 @@ class PanelProvider implements vscode.WebviewViewProvider {
   private async doAction(kind: "deploy" | "upload"): Promise<void> {
     if (this.busy) return;
     this.busy = true;
+    this.busyAction = kind;
+    this.items.clear();
     this.post({ type: "busy", busy: true, action: kind });
     this.post({ type: "clear" });
     try {
@@ -525,6 +616,7 @@ class PanelProvider implements vscode.WebviewViewProvider {
       this.post({ type: "done", ok: false, msg: m });
     } finally {
       this.busy = false;
+      this.busyAction = null;
       this.post({ type: "busy", busy: false, action: kind });
     }
   }
@@ -536,6 +628,9 @@ class PanelProvider implements vscode.WebviewViewProvider {
       personalRepo: cfg.get<string>("personalRepo") ?? "",
       frameworkDir: cfg.get<string>("frameworkDir") ?? "~/dev/dev-env-sync",
       withToolchain: cfg.get<boolean>("withToolchain") ?? true,
+      busy: this.busy,
+      busyAction: this.busyAction,
+      items: [...this.items.values()],
     });
   }
 
@@ -668,6 +763,14 @@ class PanelProvider implements vscode.WebviewViewProvider {
       $("dir").value = m.frameworkDir || "";
       $("tool").checked = !!m.withToolchain;
       $("hint").style.display = m.personalRepo ? "none" : "block";
+      $("items").innerHTML = "";
+      (m.items || []).forEach(renderItem);
+      if (m.busy) {
+        $("deploy").disabled = true;
+        $("upload").disabled = true;
+        $("status").textContent = m.busyAction === "upload" ? "上传中…" : "部署中…";
+        $("status").classList.add("busy");
+      }
     } else if (m.type === "saved") {
       $("savedMsg").style.display = "block";
       setTimeout(() => ($("savedMsg").style.display = "none"), 2500);
