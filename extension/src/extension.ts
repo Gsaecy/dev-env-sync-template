@@ -341,6 +341,28 @@ async function deployExtensions(personalDir: string, log: Logger, emit: ItemEmit
     });
   }
 
+  // 其他平台段的条目：本机不装，但要让用户看得见「确实被过滤掉了」
+  const ownIds = new Set(ids);
+  const otherOnly = [
+    ...new Set(
+      Object.entries(sections.platforms)
+        .filter(([p]) => p !== process.platform)
+        .flatMap(([, list]) => list),
+    ),
+  ].filter((id) => !ownIds.has(id));
+  if (otherOnly.length) {
+    const label = Object.keys(sections.platforms)
+      .filter((p) => p !== process.platform)
+      .map((p) => PLATFORM_LABEL[p] ?? p)
+      .join(" / ");
+    emit({
+      id: "ext:platform-filter",
+      name: `扩展 · 平台过滤：跳过 ${otherOnly.length} 个${label}专属`,
+      status: "ok",
+      detail: otherOnly.slice(0, 5).join("、") + (otherOnly.length > 5 ? " 等" : ""),
+    });
+  }
+
   let installed = 0;
   await runPool(
     applicable.map((id) => async () => {
