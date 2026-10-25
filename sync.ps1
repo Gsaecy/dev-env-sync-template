@@ -6,6 +6,21 @@ $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Personal = Join-Path $RepoDir "personal"
 $Date = Get-Date -Format "yyyy-MM-dd HH:mm"
 
+Write-Host "==> 收集本机技能 -> 个人内容库（私有）"
+$SkillsSrc = Join-Path $env:USERPROFILE ".copilot\skills"
+$SkillsDst = Join-Path $Personal "copilot\skills"
+if ((Test-Path $SkillsSrc) -and (Test-Path $Personal)) {
+  New-Item -ItemType Directory -Force -Path $SkillsDst | Out-Null
+  # 每个技能整目录覆盖：本机新建/修改的技能才会被带进私有库
+  Get-ChildItem -Path $SkillsSrc -Directory | ForEach-Object {
+    $target = Join-Path $SkillsDst $_.Name
+    Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path $_.FullName -Destination $target -Recurse -Force
+  }
+  $count = (Get-ChildItem -Path $SkillsDst -Directory | Measure-Object).Count
+  Write-Host "OK 技能已收集（$count 个）"
+}
+
 Write-Host "==> 上传个人内容库（私有）"
 if (Test-Path (Join-Path $Personal ".git")) {
   git -C $Personal add -A

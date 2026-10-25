@@ -30,7 +30,9 @@
   - macOS：Xcode CLT → Homebrew → Brewfile（node/rustup/cmake/ninja…）→ npm 全局包
   - Windows：winget（Git / Node LTS / Rustup / CMake / Ninja）→ VS 2022 Build Tools（C++）→ npm 全局包
   - 自动识别 arm64 / x64，重复执行幂等
-- **sync**（`sync.command` / `sync.bat`）：把本机改动一键提交并推送到两个仓库
+  - 只覆盖私有库里存在的技能；本机独有技能与隐藏文件保留（不再全量删除）
+- **sync**（`sync.command` / `sync.bat`）：先把本机 `~/.copilot/skills` 收进私有库，再提交并推送到两个仓库
+  - 只在本机装了新技能、没手工放进 `personal/` 时，`sync` 会自己把它们带上去；符号链接的技能按真实目录复制（Windows 上没有链接目标）
 - 内部实现：`install.sh` / `install.ps1`（可单独调用）
 
 ## 私有内容库的结构约定
@@ -41,10 +43,36 @@ copilot/copilot-instructions.md   # Copilot 全局指令
 tools/npm-globals.txt             # npm 全局包，一行一个
 tools/brew/Brewfile               # macOS Homebrew 清单
 tools/winget/packages.txt         # Windows winget 清单
+tools/vscode-extensions.txt       # VS Code 扩展清单（通用段 + [platform:*] 专属段）
+tools/extension-platforms.json    # 可选：扩展平台判定覆盖表（不写就用内置规则）
 playground/…                      # 其他离线资源（如图标库 vendor + 演示）
 ```
 
 清单模板见 `tools/*.example.*`。
+
+### 平台过滤（扩展与技能）
+
+**扩展**：
+
+- 上传时按 ID 判定落位：macOS 专属（swift / xcode / apple / ios / macos / sweetpad / swiftlint / swiftformat）写进
+  `[platform:darwin]` 段，其余进通用段；旧清单里错位/重复的条目会被自动规整。
+- VS Code 内置扩展（js-debug、typescript-language-features 等）不再写进清单。
+- 部署时再按当前系统过滤一次：不属于本系统的扩展**跳过不装**；若本机已装且不适用，会提示卸载命令。
+- 需要补充判断时，在私有库加 `tools/extension-platforms.json`（见 `tools/extension-platforms.json.example`）。
+
+**技能**：
+
+在 `SKILL.md` frontmatter 里声明适用平台，不写 = 全平台：
+
+```yaml
+---
+name: mac-appstore-submission
+description: ...
+platforms: [darwin]        # 或 darwin, win32
+---
+```
+
+部署时不属于当前系统的技能会跳过（不会写入 `~/.copilot/skills`）。
 
 ## 新设备三步
 

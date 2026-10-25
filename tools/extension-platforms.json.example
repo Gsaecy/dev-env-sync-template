@@ -1,0 +1,7 @@
+{
+  "_comment": "扩展 ID -> 允许的平台数组（darwin / win32 / linux）。不写 = 全平台。内置规则已识别 swift / xcode / apple / ios / macos / sweetpad / swiftlint / swiftformat 等 macOS 专属扩展。",
+  "_示例-仅macOS": [],
+  "some.publisher.mac-only-tool": ["darwin"],
+  "some.publisher.windows-only-tool": ["win32"],
+  "some.publisher.both": ["darwin", "win32"]
+}

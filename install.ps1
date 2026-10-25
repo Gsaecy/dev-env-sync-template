@@ -23,13 +23,49 @@ if (Test-Path $ContentRoot) {
 }
 
 # ---------- 1. Copilot skills 与全局指令 ----------
+# 技能可在 SKILL.md frontmatter 声明 platforms: [darwin] / os: windows；
+# 不属于当前系统的技能跳过，不落盘。
+function Get-SkillPlatforms($dir) {
+  $file = Join-Path $dir "SKILL.md"
+  if (-not (Test-Path $file)) { return "" }
+  $lines = Get-Content $file -TotalCount 40
+  if ($lines.Count -lt 2 -or $lines[0].Trim() -ne "---") { return "" }
+  for ($i = 1; $i -lt $lines.Count; $i++) {
+    if ($lines[$i].Trim() -eq "---") { break }
+    if ($lines[$i] -match '^(?i)\s*(platforms|os)\s*:\s*(.+)$') {
+      return $Matches[2].ToLower().Replace("[", "").Replace("]", "").Replace('"', "")
+    }
+  }
+  return ""
+}
+
+function Test-SkillAllowed($dir) {
+  $list = Get-SkillPlatforms $dir
+  if ([string]::IsNullOrWhiteSpace($list)) { return $true }
+  foreach ($v in ($list -split '[, ]+' | Where-Object { $_ })) {
+    $name = $v.Trim()
+    if ($name -eq "macos" -or $name -eq "mac" -or $name -eq "osx") { $name = "darwin" }
+    if ($name -eq "windows" -or $name -eq "win") { $name = "win32" }
+    if ($name -eq "win32") { return $true }
+  }
+  return $false
+}
+
 $skillsSrc = Join-Path $ContentRoot "copilot\skills"
 $skillsDst = Join-Path $env:USERPROFILE ".copilot\skills"
 if (Test-Path $skillsSrc) {
   Info "部署 Copilot skills"
   New-Item -ItemType Directory -Force -Path $skillsDst | Out-Null
-  Remove-Item (Join-Path $skillsDst "*") -Recurse -Force -ErrorAction SilentlyContinue
-  Copy-Item -Path (Join-Path $skillsSrc "*") -Destination $skillsDst -Recurse -Force
+  Get-ChildItem -Path $skillsSrc -Directory | ForEach-Object {
+    if (-not (Test-SkillAllowed $_.FullName)) {
+      Warn "跳过技能 $($_.Name)（仅 $(Get-SkillPlatforms $_.FullName) 可用）"
+      return
+    }
+    # 只覆盖私有库里存在的技能：本机独有技能与隐藏文件保留
+    $target = Join-Path $skillsDst $_.Name
+    Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path $_.FullName -Destination $target -Recurse -Force
+  }
   $ghDir = Join-Path $env:USERPROFILE ".github"
   New-Item -ItemType Directory -Force -Path $ghDir | Out-Null
   $instr = Join-Path $ContentRoot "copilot\copilot-instructions.md"

@@ -4,6 +4,26 @@
 cd "$(dirname "$0")"
 DATE="$(date '+%Y-%m-%d %H:%M')"
 
+echo "==> 收集本机技能 → 个人内容库（私有）"
+SKILLS_SRC="$HOME/.copilot/skills"
+SKILLS_DST="personal/copilot/skills"
+if [ -d "$SKILLS_SRC" ] && [ -d personal ]; then
+  mkdir -p "$SKILLS_DST"
+  if command -v rsync >/dev/null 2>&1; then
+    # -L 跟随符号链接：项目里链到 ~/.copilot/skills 的技能要复制成真实目录，
+    # 否则到 Windows 上没有链接目标会失效。
+    rsync -aL --exclude '.DS_Store' --exclude '.skill-install-log.md' "$SKILLS_SRC/" "$SKILLS_DST/"
+  else
+    for d in "$SKILLS_SRC"/*/; do
+      [ -d "$d" ] || continue
+      name="$(basename "$d")"
+      rm -rf "$SKILLS_DST/$name"
+      cp -RL "$d" "$SKILLS_DST/$name"
+    done
+  fi
+  echo "✔ 技能已收集（$(find "$SKILLS_DST" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') 个）"
+fi
+
 echo "==> 上传个人内容库（私有）"
 if [ -d personal/.git ]; then
   (cd personal && git add -A)

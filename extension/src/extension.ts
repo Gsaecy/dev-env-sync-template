@@ -4,6 +4,17 @@ import * as fs from "fs/promises";
 import { existsSync } from "fs";
 import * as os from "os";
 import * as path from "path";
+import { collectSkillsFrom, copyTree, dirSig, isSkillAllowedOn, readDeclaredPlatforms } from "./skillSync";
+import {
+  PLATFORM_LABEL,
+  allowedPlatforms,
+  isAllowedOn,
+  loadOverrides,
+  mergeInstalledIntoManifest,
+  parseManifest,
+  pruneIds,
+  serializeManifest,
+} from "./platform";
 
 const output = vscode.window.createOutputChannel("Dev Env Sync");
 const EXT_MANIFEST = "tools/vscode-extensions.txt";
@@ -69,20 +80,6 @@ function expandHome(p: string): string {
   return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
 }
 
-async function copyTree(src: string, dst: string): Promise<void> {
-  const entries = await fs.readdir(src, { withFileTypes: true });
-  for (const e of entries) {
-    const s = path.join(src, e.name);
-    const d = path.join(dst, e.name);
-    if (e.isDirectory()) {
-      await fs.mkdir(d, { recursive: true });
-      await copyTree(s, d);
-    } else if (e.isFile()) {
-      await fs.copyFile(s, d);
-    }
-  }
-}
-
 /** 并发执行池：同时最多 limit 个任务。 */
 async function runPool<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
   const results: T[] = new Array(tasks.length);
@@ -97,28 +94,6 @@ async function runPool<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T
   return results;
 }
 
-/** 目录签名：相对路径+文件大小（不用 mtime——copyFile 不保留源时间戳，会导致永远不同）。 */
-async function dirSig(dir: string): Promise<string | null> {
-  const list: string[] = [];
-  async function walk(d: string, rel: string): Promise<void> {
-    const es = await fs.readdir(d, { withFileTypes: true });
-    for (const e of es) {
-      const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) await walk(path.join(d, e.name), r);
-      else if (e.isFile()) {
-        const st = await fs.stat(path.join(d, e.name));
-        list.push(`${r}|${st.size}`);
-      }
-    }
-  }
-  try {
-    await walk(dir, "");
-  } catch {
-    return null;
-  }
-  return list.sort().join("\n");
-}
-
 function readManifestLines(file: string): Promise<string[]> {
   return fs
     .readFile(file, "utf8")
@@ -128,61 +103,6 @@ function readManifestLines(file: string): Promise<string[]> {
 
 // ---------- 扩展清单（按平台分节） ----------
 // 部署时安装「通用」段 + 当前平台专属段，其他平台段忽略（如 macOS 的 Swift 扩展不会同步到 Windows）。
-
-interface ManifestSections {
-  common: string[];
-  platforms: Record<string, string[]>;
-}
-
-const PLATFORM_LABEL: Record<string, string> = {
-  darwin: "macOS",
-  win32: "Windows",
-  linux: "Linux",
-};
-
-function parseManifest(text: string): ManifestSections {
-  const m: ManifestSections = { common: [], platforms: {} };
-  let cur: string[] = m.common;
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (line.startsWith("#")) {
-      const mm = line.match(/^#\s*\[platform:([a-z0-9_]+)\]/);
-      if (mm) {
-        const p = mm[1];
-        m.platforms[p] = m.platforms[p] ?? [];
-        cur = m.platforms[p];
-      }
-      continue;
-    }
-    cur.push(line);
-  }
-  return m;
-}
-
-function serializeManifest(m: ManifestSections): string {
-  const lines = [
-    "# VS Code 扩展清单（由 Dev Env Sync 自动生成）",
-    "# 部署时安装「通用」段 + 当前平台专属段；其他平台段忽略",
-    "",
-    ...m.common,
-  ];
-  for (const [p, ids] of Object.entries(m.platforms)) {
-    if (!ids.length) continue;
-    const label = PLATFORM_LABEL[p] ?? p;
-    lines.push("", `# [platform:${p}] ${label} 专属`);
-    lines.push(...ids);
-  }
-  lines.push("");
-  return lines.join("\n");
-}
-
-/** 按扩展 ID 启发式猜测所属平台：macOS 专属扩展（swift/xcode/apple）识别可靠，Windows/Linux 专属不猜。 */
-function guessPlatform(id: string): string | null {
-  const l = id.toLowerCase();
-  if (/(^|[.\-_])(swift|xcode|apple|darwin)([.\-_]|$)/.test(l)) return "darwin";
-  return null;
-}
 
 function codeCli(): string | null {
   const bin = process.platform === "win32" ? "code.cmd" : "code";
@@ -201,9 +121,34 @@ function npmCmd(): string | null {
   return null;
 }
 
+/** VS Code 自带（内置）扩展的 ID 列表：读 appRoot/extensions 下每个 package.json。 */
+async function listBuiltinExtensionIds(): Promise<string[]> {
+  const root = path.join(vscode.env.appRoot, "extensions");
+  const ids: string[] = [];
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    try {
+      const raw = await fs.readFile(path.join(root, e.name, "package.json"), "utf8");
+      const pkg = JSON.parse(raw) as { publisher?: string; name?: string };
+      if (pkg.publisher && pkg.name) ids.push(`${pkg.publisher}.${pkg.name}`);
+    } catch {
+      // 没有 package.json 或解析失败：不是可识别的扩展，跳过
+    }
+  }
+  return ids;
+}
+
+/**
+ * 本机已装、且**不是 VS Code 内置**的扩展。
+ * 内置扩展（js-debug、typescript-language-features 等）每个版本都自带，
+ * 写进清单只会让别的设备收到一堆装不装都一样的 ID。
+ */
 function listInstalledExtensions(): string[] {
+  const builtinRoot = path.resolve(vscode.env.appRoot, "extensions") + path.sep;
   return vscode.extensions.all
     .filter((e) => !e.id.startsWith("vscode."))
+    .filter((e) => !path.resolve(e.extensionPath).startsWith(builtinRoot))
     .map((e) => e.id)
     .sort();
 }
@@ -257,6 +202,18 @@ async function deploySkills(personalDir: string, emit: ItemEmitter): Promise<{ f
       const s = path.join(skillsSrc, name);
       const d = path.join(skillsDst, name);
       try {
+        // 技能可在 SKILL.md 里声明 platforms: [darwin]，不属于当前系统的直接跳过，不落盘
+        if (!(await isSkillAllowedOn(s, process.platform))) {
+          const declared = (await readDeclaredPlatforms(s)) ?? [];
+          const where = declared.map((x) => PLATFORM_LABEL[x] ?? x).join(" / ");
+          emit({
+            id: `${id}:skip`,
+            name: `技能 · ${name}`,
+            status: "manual",
+            detail: `仅 ${where} 可用，已跳过`,
+          });
+          return;
+        }
         if ((await dirSig(s)) === (await dirSig(d))) {
           emit({ id, name: `技能 · ${name}`, status: "ok", detail: "已是最新，跳过" });
           return;
@@ -277,6 +234,47 @@ async function deploySkills(personalDir: string, emit: ItemEmitter): Promise<{ f
     emit({ id: `skill:local:${name}`, name: `技能 · ${name}`, status: "ok", detail: "本机独有，已保留" });
   }
   return { found: true, changed };
+}
+
+/**
+ * 收集本机技能到私有库（上传方向：本机 → 私有库）。
+ *
+ * 之前的「一键上传」只 `git add -A` 私有库工作区，从不把本机新建/修改的技能带进去，
+ * 所以新建的技能永远传不上去，只能手工复制到 personal/。这里补齐这一环。
+ */
+async function collectSkills(
+  personalDir: string,
+  log: Logger,
+  emit: ItemEmitter,
+): Promise<{ total: number; updated: number; failed: number }> {
+  const skillsSrc = path.join(os.homedir(), ".copilot", "skills");
+  const skillsDst = path.join(personalDir, "copilot", "skills");
+  const id = "up:skills";
+
+  if (!(await exists(skillsSrc))) {
+    emit({ id, name: "技能 · 收集本机技能", status: "manual", detail: "未找到 ~/.copilot/skills，跳过" });
+    return { total: 0, updated: 0, failed: 0 };
+  }
+
+  emit({ id, name: "技能 · 收集本机技能", status: "running", detail: "正在比对…" });
+  const result = await collectSkillsFrom(skillsSrc, skillsDst);
+  for (const f of result.failed) {
+    emit({ id: `${id}:${f.name}`, name: `技能 · ${f.name}`, status: "fail", detail: f.error.slice(0, 160) });
+  }
+
+  const summary = `技能 · 已收集 ${result.total} 个（${result.updated.length} 个更新${result.failed.length ? `，${result.failed.length} 个失败` : ""}）`;
+  emit({
+    id,
+    name: summary,
+    status: result.failed.length ? "fail" : "ok",
+    detail: result.failed.length
+      ? "见下方失败项"
+      : result.updated.length
+        ? `已同步到私有库：${result.updated.slice(0, 6).join("、")}${result.updated.length > 6 ? " 等" : ""}`
+        : "全部已是最新",
+  });
+  if (result.updated.length) log(`技能收集：更新 ${result.updated.length} 个 → ${skillsDst}`);
+  return { total: result.total, updated: result.updated.length, failed: result.failed.length };
 }
 
 async function deployInstructions(personalDir: string, emit: ItemEmitter): Promise<boolean> {
@@ -317,13 +315,35 @@ async function deployExtensions(personalDir: string, log: Logger, emit: ItemEmit
     emit({ id: "tool:code-cli", name: "扩展安装器 · code CLI", status: "manual", detail: "未找到 code 命令", url: "https://code.visualstudio.com/download" });
     return { changed: false };
   }
-  // 只安装通用段 + 当前平台专属段（如 macOS 的 Swift 扩展不会装到 Windows）
+  // 只安装通用段 + 当前平台专属段，并再按平台判定过滤一次：
+  // 旧清单里被误塞进通用段的 macOS 专属扩展（如 swiftlang.swift-vscode）也不会装到 Windows。
   const text = await fs.readFile(file, "utf8").catch(() => "");
   const sections = parseManifest(text);
+  const overrides = await loadOverrides(personalDir);
   const ids = [...new Set([...sections.common, ...(sections.platforms[process.platform] ?? [])])];
+
+  const applicable: string[] = [];
+  for (const id of ids) {
+    if (isAllowedOn(id, process.platform, overrides)) {
+      applicable.push(id);
+      continue;
+    }
+    const allowed = allowedPlatforms(id, overrides) ?? [];
+    const where = allowed.map((x) => PLATFORM_LABEL[x] ?? x).join(" / ");
+    const already = vscode.extensions.getExtension(id);
+    emit({
+      id: `ext:skip:${id}`,
+      name: `扩展 · ${id}`,
+      status: "manual",
+      detail: already
+        ? `仅 ${where} 可用：当前系统已装但不可用，可执行 code --uninstall-extension ${id} 移除`
+        : `仅 ${where} 可用，已跳过`,
+    });
+  }
+
   let installed = 0;
   await runPool(
-    ids.map((id) => async () => {
+    applicable.map((id) => async () => {
       if (id === SELF_ID || vscode.extensions.getExtension(id)) {
         emit({ id: `ext:${id}`, name: `扩展 · ${id}`, status: "ok", detail: "已安装" });
         return;
@@ -486,36 +506,33 @@ async function runUpload(log: Logger, emit: ItemEmitter): Promise<string> {
     throw new Error("personal 内容库不存在，请先执行「一键部署」");
   }
 
-  // 1. 导出本机扩展清单到私有库（按平台分节：通用段合并保留、其他平台段原样、当前平台专属段按启发式归类）
+  // 0. 收集本机技能到私有库：不先做这一步，新建的技能永远进不了私有库
+  const skills = await collectSkills(personalDir, log, emit);
+
+  // 1. 导出本机扩展清单到私有库：
+  //    先按平台判定落位（通用 / 平台专属），再整份规整——旧清单里重复或错位的条目会被修正
   emit({ id: "up:manifest", name: "扩展清单 · 导出本机已装扩展", status: "running", detail: "正在导出…" });
   try {
     const file = path.join(personalDir, "tools", "vscode-extensions.txt");
     const dir = path.join(personalDir, "tools");
     await fs.mkdir(dir, { recursive: true });
     const old = parseManifest(await fs.readFile(file, "utf8").catch(() => ""));
+    const overrides = await loadOverrides(personalDir);
     const all = listInstalledExtensions().filter((id) => id !== SELF_ID);
 
-    const mine: string[] = [];
-    const mineCommon: string[] = [];
-    for (const id of all) {
-      (guessPlatform(id) === process.platform ? mine : mineCommon).push(id);
-    }
-    // 通用段 = 旧通用段 ∪ 本机非专属（不丢其他设备导出的通用扩展）
-    const common = [...new Set([...old.common, ...mineCommon])];
-    // 其他平台专属段原样保留；当前平台专属段 = 旧段 ∪ 本机启发式匹配
-    const platforms: Record<string, string[]> = {};
-    for (const p of Object.keys(old.platforms)) {
-      platforms[p] = p === process.platform ? [...new Set([...old.platforms[p], ...mine])] : old.platforms[p];
-    }
-    if (mine.length) platforms[process.platform] = [...new Set([...(platforms[process.platform] ?? []), ...mine])];
+    const merged = mergeInstalledIntoManifest(old, all, overrides);
+    // 内置扩展每个版本自带，写进清单只会让别的设备收到无意义的 ID：整条剔除
+    const builtins = await listBuiltinExtensionIds();
+    const cleaned = pruneIds(merged, [...builtins, SELF_ID]);
+    const moved = all.filter((id) => (allowedPlatforms(id, overrides) ?? []).length === 1);
 
-    await fs.writeFile(file, serializeManifest({ common, platforms }), "utf8");
+    await fs.writeFile(file, serializeManifest(cleaned), "utf8");
     const label = PLATFORM_LABEL[process.platform] ?? process.platform;
     emit({
       id: "up:manifest",
-      name: `扩展清单 · 已导出 ${all.length} 个（${mine.length} 个归入 ${label} 专属段）`,
+      name: `扩展清单 · 已导出 ${all.length} 个（${moved.length} 个归入平台专属段）`,
       status: "ok",
-      detail: "导出完成",
+      detail: `本机 ${label}：通用 ${cleaned.common.length} 个 + 专属 ${(cleaned.platforms[process.platform] ?? []).length} 个`,
     });
   } catch (e) {
     emit({ id: "up:manifest", name: "扩展清单 · 导出失败", status: "fail", detail: errMsg(e) });
@@ -554,7 +571,7 @@ async function runUpload(log: Logger, emit: ItemEmitter): Promise<string> {
       emit({ id: "up:framework", name: "同步框架 · 提交并推送", status: "fail", detail: errMsg(e).slice(0, 160) });
     }
   }
-  return "✔ 上传完毕：扩展清单与改动已推送到私有库";
+  return `✔ 上传完毕：技能 ${skills.total} 个（${skills.updated} 个更新）、扩展清单与改动已推送到私有库`;
 }
 
 // ---------- 命令（命令面板入口） ----------

@@ -24,18 +24,69 @@ warn() { echo "⚠ $*"; }
 info "设备环境：$OS / $ARCH"
 
 # ---------- 1. Copilot skills 与全局指令 ----------
+# 技能可在 SKILL.md frontmatter 声明 platforms: [darwin] / os: windows；
+# 不属于当前系统的技能直接跳过，不落盘（跨平台技能不用写）。
+skill_platforms() {
+  local file="$1/SKILL.md"
+  [ -f "$file" ] || return 0
+  awk '
+    NR == 1 { if ($0 != "---") exit; inside = 1; next }
+    inside && $0 == "---" { exit }
+    inside && tolower($0) ~ /^(platforms|os)[[:space:]]*:/ {
+      sub(/^[^:]*:[[:space:]]*/, "");
+      print tolower($0);
+      exit
+    }
+  ' "$file"
+}
+
+current_platform() {
+  case "$(uname -s)" in
+    Linux*) echo "linux" ;;
+    MINGW*|MSYS*|CYGWIN*) echo "win32" ;;
+    *) echo "darwin" ;;
+  esac
+}
+
+skill_allowed() {
+  local list v os
+  list="$(skill_platforms "$1")"
+  [ -z "$list" ] && return 0
+  os="$(current_platform)"
+  list="$(printf '%s' "$list" | tr -d '[]"' | tr ',' ' ')"
+  for v in $list; do
+    case "$v" in
+      macos|mac|osx) v="darwin" ;;
+      windows|win) v="win32" ;;
+    esac
+    [ "$v" = "$os" ] && return 0
+  done
+  return 1
+}
+
 deploy_copilot() {
   local src="$CONTENT_ROOT/copilot/skills" dst="$HOME/.copilot/skills"
   if [ ! -d "$src" ]; then warn "未找到 ${src}，跳过 skills 部署"; return 0; fi
   info "部署 Copilot skills → $dst"
   mkdir -p "$dst"
-  if command -v rsync >/dev/null 2>&1; then
-    # --delete 保证与仓库完全一致（仓库删掉的技能本机也删）
-    rsync -a --delete "$src/" "$dst/"
-  else
-    warn "本机无 rsync，改用 cp 覆盖；仓库已删除的技能不会被清理"
-    cp -a "$src/." "$dst/"
-  fi
+
+  local d name
+  for d in "$src"/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    if ! skill_allowed "$d"; then
+      warn "跳过技能 $name（仅 $(skill_platforms "$d") 可用）"
+      continue
+    fi
+    # 只覆盖私有库里有的技能：本机独有技能与隐藏文件保留
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --exclude '.DS_Store' "$d" "$dst/"
+    else
+      rm -rf "$dst/$name"
+      cp -R "$d" "$dst/$name"
+    fi
+  done
+
   if [ -f "$CONTENT_ROOT/copilot/copilot-instructions.md" ]; then
     mkdir -p "$HOME/.github"
     cp "$CONTENT_ROOT/copilot/copilot-instructions.md" "$HOME/.github/copilot-instructions.md"
