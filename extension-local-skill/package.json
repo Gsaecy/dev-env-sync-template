@@ -86,10 +86,5 @@
 		"typescript": "^5.4.0",
 		"@vscode/vsce": "^3.0.0"
 	},
-	"__metadata": {
-		"installedTimestamp": 1788702182192,
-		"targetPlatform": "undefined",
-		"size": 123446
-	},
 	"homepage": "https://github.com/Gsaecy/dev-env-sync-template/tree/main/extension-local-skill"
 }
