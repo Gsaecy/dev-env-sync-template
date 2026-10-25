@@ -80,35 +80,18 @@ platforms: [darwin]        # 或 darwin, win32
 2. 双击 `deploy`（首次输入私人库地址）
 3. 打开 VS Code「设置同步」（GitHub 账号登录）恢复扩展/设置/快捷键 —— 与框架互补
 
-## VS Code 插件
+## VS Code 插件（extension/）
 
-本仓库包含两个自包含插件（都不依赖本仓库目录）：
+除了双击脚本，还可以用 **VS Code 插件**在编辑器里直接同步（两条命令：`Dev Env Sync: 一键部署` / `一键上传`）。插件自包含（不依赖本仓库目录），私人库地址存 VS Code 设置并随设置同步。
 
-| 目录 | 插件 | 用途 |
-|---|---|---|
-| `extension/` | 部署环境一键迁移（`dev-env-sync`） | 一键部署 / 上传开发环境（技能、扩展清单、工具链） |
-| `extension-local-skill/` | 本地skill快捷调用（`local-skill-quick-launch`） | 可视化勾选管理 `~/.copilot/skills`：分类可改名/新建、技能可换组、勾选即默认激活 |
+- 源码：`extension/`
+- 构建：`cd extension && npm install && npm run compile && npm run package`（产出 `.vsix`）
+- 安装 VSIX：`code --install-extension dev-env-sync-x.y.z.vsix`
+- 发布到 Marketplace 后，新设备登录 GitHub 账号即可由「设置同步」自动安装插件
 
-### 部署环境一键迁移
+### 同类插件
 
-两条命令：`Dev Env Sync: 一键部署` / `一键上传`。私人库地址存 VS Code 设置并随设置同步。
-
-```bash
-cd extension && npm install && npm run compile && npm run package
-code --install-extension dev-env-sync-x.y.z.vsix
-```
-
-### 本地skill快捷调用
-
-管理本地技能的勾选、分类与调用方式；勾选后写入 `~/.github/copilot-instructions.md` 的路由表，
-对话命中技能用途或触发词时自动读取对应 `SKILL.md`。
-
-```bash
-cd extension-local-skill && npm install && npm run compile && npm run package
-code --install-extension local-skill-quick-launch-x.y.z.vsix
-```
-
-发布到 Marketplace 后，新设备登录 GitHub 账号即可由「设置同步」自动安装插件。
+技能勾选与分类管理在独立仓库：[Gsaecy/Local_skill_quick_access](https://github.com/Gsaecy/Local_skill_quick_access)（本地skill快捷调用）。
 
 ## 日常
 
