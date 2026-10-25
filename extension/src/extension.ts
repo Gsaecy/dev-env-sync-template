@@ -361,6 +361,20 @@ async function deployExtensions(personalDir: string, log: Logger, emit: ItemEmit
       status: "ok",
       detail: otherOnly.slice(0, 5).join("、") + (otherOnly.length > 5 ? " 等" : ""),
     });
+
+    // 之前同步时装错的：本机已装、但属于其他系统，给一条可直接执行的卸载提示
+    const wrong = otherOnly.filter((id) => vscode.extensions.getExtension(id));
+    if (wrong.length) {
+      emit({
+        id: "ext:wrong-platform",
+        name: `扩展 · 发现 ${wrong.length} 个不适用于本系统的扩展`,
+        status: "manual",
+        detail: wrong
+          .slice(0, 3)
+          .map((id) => `code --uninstall-extension ${id}`)
+          .join("；"),
+      });
+    }
   }
 
   let installed = 0;
